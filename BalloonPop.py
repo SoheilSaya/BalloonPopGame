@@ -3,12 +3,17 @@ import pygame
 import cv2
 import numpy as np
 import time
-
+import threading
+from playsound import playsound
+from pygame.locals import *
+from bidi import algorithm
+import os
+import persian_reshaper
 # Initialize
 pygame.init()
 
 # Create Window/Display
-width, height = 1280, 720
+width, height = 1000, 800
 window = pygame.display.set_mode((width, height))
 pygame.display.set_caption("Balloon Pop")
 
@@ -20,23 +25,34 @@ clock = pygame.time.Clock()
 cap = cv2.VideoCapture(0)
 cap.set(3, 1280)  # width
 cap.set(4, 720)  # height
-
+window_x = 200
+window_y = 100
+os.environ['SDL_VIDEO_WINDOW_POS'] = f"{window_x},{window_y}"
 # Images
 imgBalloon = pygame.image.load("./Resources/BalloonRed.png").convert_alpha()
 rectBalloon = imgBalloon.get_rect()
+imgBomb = pygame.image.load("./Resources/bomb.png").convert_alpha()
+rectBomb = imgBomb.get_rect()
 rectBalloon.x, rectBalloon.y = 500, 100
+#rectBomb.x, rectBomb.y = 500, 100
 
 # Variables
-speed = 15
+speed = 8
 score = 0
 startTime = time.time()
-totalTime = 60
+totalTime = 600
 
 # Detector
-
-
 points = []
+def play_sound_threaded(sound_path):
+    # Create a new thread to play the sound
+    sound_thread = threading.Thread(target=playsound, args=(sound_path,))
 
+    # Set the thread as a daemon so that it terminates when the main program ends
+    sound_thread.daemon = True
+
+    # Start the thread to play the sound
+    sound_thread.start()
 def mouse_callback(event, x, y, flags, param):
     if event == cv2.EVENT_LBUTTONDOWN:
         points.append((x, y))
@@ -67,20 +83,42 @@ def resetBalloon():
 def balloonBurst():
     resetBalloon()
 
+def isCollision(circle_x, circle_y, circle_radius, rect_x, rect_y, rect_width, rect_height):
+    # Check if the circle (ball) collides with the rectangle (balloon)
+    dx = circle_x - max(rect_x, min(circle_x, rect_x + rect_width))
+    dy = circle_y - max(rect_y, min(circle_y, rect_y + rect_height))
+    return (dx**2 + dy**2) < (circle_radius**2)
+
+def yellowBallCollidesBalloon(circle_x, circle_y, circle_radius, balloon_rect):
+    # Check if the circle (yellow ball) collides with the rectangle (balloon)
+    return balloon_rect.colliderect(circle_x - circle_radius, circle_y - circle_radius, 2 * circle_radius, 2 * circle_radius)
+
+def transformCoordinates(x, y):
+    # Apply the calibration transformation to the (x, y) coordinates
+    transformed_x = M[0, 0] * x + M[0, 1] * y + M[0, 2]
+    transformed_y = M[1, 0] * x + M[1, 1] * y + M[1, 2]
+    transformed_w = M[2, 0] * x + M[2, 1] * y + M[2, 2]
+
+    transformed_x /= transformed_w
+    transformed_y /= transformed_w
+
+    return int(transformed_x), int(transformed_y)
+
 # Main loop
 start = True
 while start:
-    # Get Events
+    if rectBalloon.y<(width/10*5):
+        rectBomb.x=10000
+        rectBomb.y=10000
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             start = False
             pygame.quit()
 
-    # Apply Logic
     timeRemain = int(totalTime - (time.time() - startTime))
     if timeRemain < 0:
+        # Game Over
         window.fill((255, 255, 255))
-
         font = pygame.font.Font(None, 50)
         textScore = font.render(f"Your Score: {score}", True, (50, 50, 255))
         textTime = font.render(f"Time UP", True, (50, 50, 255))
@@ -88,12 +126,8 @@ while start:
         window.blit(textTime, (530, 275))
 
     else:
-        # OpenCV
         success, img = cap.read()
-        img = cv2.flip(img, 1)
 
-
-        # Yellow ball detection
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         lower_yellow = np.array([20, 100, 100])
         upper_yellow = np.array([40, 255, 255])
@@ -101,45 +135,52 @@ while start:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if len(contours) > 0:
-            # Assuming the largest contour is the yellow ball
             max_contour = max(contours, key=cv2.contourArea)
             (x, y), radius = cv2.minEnclosingCircle(max_contour)
             x, y, radius = int(x), int(y), int(radius)
 
-            # Draw yellow ball on the webcam feed
             if radius > 5:
                 cv2.circle(img, (x, y), radius, (0, 255, 255), 2)
-                if rectBalloon.collidepoint(x, y):
-                    balloonBurst()
-                    score += 10
-                    speed += 1
 
-        rectBalloon.y -= speed  # Move the balloon up
-        # check if balloon has reached the top without pop
-        if rectBalloon.y < 0:
+                # Apply the calibration transformation to the yellow ball coordinates
+                x_transformed, y_transformed = transformCoordinates(x, y)
+
+                # Check if the transformed yellow ball collides with the balloon
+                if yellowBallCollidesBalloon(x_transformed, y_transformed, radius, rectBalloon):
+                    
+                    rectBomb.x=rectBalloon.x
+                    rectBomb.y=rectBalloon.y
+                    #time.sleep(0.5)
+                    sound_file_path = './Resources/eyval.mp3'
+                    play_sound_threaded(sound_file_path)
+                    balloonBurst()
+
+                    
+                    score += 10
+                    speed += 0.3
+                    
+
+        rectBalloon.y -= speed
+        if rectBalloon.y < -rectBalloon.height:  # Check if the balloon is completely off the screen
             resetBalloon()
-            speed += 1
+            speed += 0.3
 
         imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         calibrated_frame = cv2.warpPerspective(imgRGB, M, (width, height))
-
-        # Rotate the calibrated_frame using cv2.rotate
         calibrated_frame = cv2.rotate(calibrated_frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
         frame = pygame.surfarray.make_surface(calibrated_frame).convert()
         frame = pygame.transform.flip(frame, True, False)
         window.blit(frame, (0, 0))
         window.blit(imgBalloon, rectBalloon)
-
-        font = pygame.font.Font(None, 50)
-        textScore = font.render(f"Score: {score}", True, (50, 50, 255))
-        textTime = font.render(f"Time: {timeRemain}", True, (50, 50, 255))
+        window.blit(imgBomb, rectBomb)
+        font = pygame.font.Font('./Resources/IRAN Sans Bold.ttf', 50)
+        textScore = font.render(algorithm.get_display(persian_reshaper.reshape(f'امتیاز: {score}')), True, (50, 50, 255))
+        textTime = font.render(algorithm.get_display(persian_reshaper.reshape(f'زمان: {timeRemain}')), True, (50, 50, 255))
         window.blit(textScore, (35, 35))
-        window.blit(textTime, (1000, 35))
+        window.blit(textTime, (800, 35))
 
-    # Update Display
     pygame.display.update()
-    # Set FPS
     clock.tick(fps)
 
 cap.release()
